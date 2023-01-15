@@ -7,6 +7,7 @@ import (
 	"collect-server/schemas"
 	"collect-server/services"
 
+	"github.com/ansrivas/fiberprometheus/v2"
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/logger"
 )
@@ -15,13 +16,17 @@ func InitializeServer() *fiber.App {
 	app := fiber.New()
 	app.Use(logger.New())
 
+	prometheus := fiberprometheus.New("event-collect-server")
+	prometheus.RegisterAt(app, "/metrics")
+	app.Use(prometheus.Middleware)
+
 	clientsService := services.NewClientsService(services.ClientAuth{
 		Username: env.PLAT_USER,
 		Password: env.PLAT_PASSWORD,
 	})
 
-	setupV5(app.Group("/v5", middlewares.ValidateClientMiddleware(&clientsService)))
-	setupV7(app.Group("/v7", middlewares.ValidateClientMiddleware(&clientsService)))
+	setupV5(app.Get("/v5", middlewares.ValidateClientMiddleware(&clientsService)))
+	setupV7(app.Get("/v7", middlewares.ValidateClientMiddleware(&clientsService)))
 
 	return app
 }
