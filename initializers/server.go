@@ -25,7 +25,10 @@ func InitializeServer() *fiber.App {
 		Password: env.PLAT_PASSWORD,
 	})
 
+	// V5
 	setupV5(app.Get("/v5", middlewares.ValidateClientMiddleware(&clientsService)))
+
+	// V7
 	setupV7(app.Get("/v7", middlewares.ValidateClientMiddleware(&clientsService)))
 
 	return app

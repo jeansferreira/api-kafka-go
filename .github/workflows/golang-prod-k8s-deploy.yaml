@@ -1,0 +1,142 @@
+name: Golang Kubernetes Prod Deploy
+
+on:
+  push:
+    tags:
+      - "[0-9]+.[0-9]+.[0-9]+"
+      - "v[0-9]+.[0-9]+.[0-9]+"
+
+jobs:
+  lint-build-test:
+    name: Build and Test
+
+    runs-on: ubuntu-latest
+
+    strategy:
+      matrix:
+        go-version: [1.14]
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v2
+    - name: Setup up Golang
+      uses: actions/setup-go@v3
+      with:
+        go-version: ${{ matrix.go-version }}
+
+    - name: Build and Test
+      run:  go mod download
+
+    - name: Testing application
+      run: go test -cover ./...
+
+  ecr-build-push:
+    name: Docker build and push to ECR
+
+    runs-on: ubuntu-latest
+
+    needs: lint-build-test
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.PLATFORM_AWS_ACCESS_ID }}
+          aws-secret-access-key: ${{ secrets.PLATFORM_AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Sets current version
+        id: set-current-version
+        run: |
+          echo ::set-output name=SOURCE_TAG::${GITHUB_REF#refs/tags/}
+      - name: Build, tag, and push image to Amazon ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          ECR_REPOSITORY: catalog/notifications
+          IMAGE_TAG: ${{ steps.set-current-version.outputs.SOURCE_TAG }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+  update-deployment-image:
+    name: Update gitops K8S deployment
+
+    runs-on: ubuntu-latest
+
+    needs: ecr-build-push
+
+    steps:
+      - uses: actions/checkout@v3
+        with:
+          repository: chaordic/eks-platform-catalog
+          ref: "main"
+          token: ${{ secrets.DEPLOYMENT_TOKEN }}
+
+      - uses: actions/setup-python@v1
+      - name: Install yq to manage yaml files
+        run: |
+          sudo apt install jq -y; \
+          pip3 install yq
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.PLATFORM_AWS_ACCESS_ID }}
+          aws-secret-access-key: ${{ secrets.PLATFORM_AWS_SECRET_ACCESS_KEY }}
+          aws-region: "us-east-1"
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+
+      - name: Sets current version
+        id: set-current-version
+        run: |
+          echo ::set-output name=SOURCE_TAG::${GITHUB_REF#refs/tags/}
+      - name: Sets github user as current actor
+        env:
+          GITHUB_USER_NAME: ${{ github.event.pusher.name }}
+          GITHUB_USER_EMAIL: ${{ github.event.pusher.email }}
+        run: |
+          git config user.name "$GITHUB_USER_NAME";
+          git config user.email "$GITHUB_USER_EMAIL"
+      - name: Update Notifications API deployment
+        env:
+          K8S_CLUSTER: catalog-eks-prod
+          K8S_NAMESPACE: integration
+          K8S_APP_NAME: notifications
+          ECR_REPOSITORY: catalog/notifications
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ steps.set-current-version.outputs.SOURCE_TAG }}
+        run: |
+          cat <<< $( \
+            yq --arg ECR_IMAGE "$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG" '.spec.template.spec.containers[0].image = $ECR_IMAGE' \
+            $K8S_CLUSTER/$K8S_NAMESPACE/$K8S_APP_NAME/deployment.yaml -y \
+          ) > $K8S_CLUSTER/$K8S_NAMESPACE/$K8S_APP_NAME/deployment.yaml
+      - name: Create Notifications deployment commit
+        env:
+          K8S_NAMESPACE: integration
+          K8S_APP_NAME: notifications
+          IMAGE_TAG: ${{ steps.set-current-version.outputs.SOURCE_TAG }}
+        run: |
+          git commit -am "chore($K8S_NAMESPACE): automated deployment of $K8S_APP_NAME to $IMAGE_TAG version"
+      - name: Push changes to gitops repository
+        run: git push origin main
+
+  slack-notification:
+    name: Slack Notification
+    runs-on: ubuntu-latest
+    needs: update-deployment-image
+    steps:
+      - uses: actions/checkout@v2
+      - name: Slack Notification
+        uses: rtCamp/action-slack-notify@v2
+        env:
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          SLACK_COLOR: ${{ job.status }}
+          SLACK_TITLE: ${{ github.event.repository.name }}
+          SLACK_MESSAGE: ${{ github.event.head_commit.message }}
