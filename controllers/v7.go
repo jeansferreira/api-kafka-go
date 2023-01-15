@@ -25,6 +25,14 @@ func NewV7Controller(kafka *services.KafkaService) V7Controller {
 	}
 }
 
+// SendHome godoc
+// @Summary Show the status of server.
+// @Description get the status of server.
+// @Tags v7
+// @Accept */*
+// @Produce json
+// @Success 200 {object} map[string]interface{}
+// @Router /home [post]
 func (controller *V7Controller) HandleHome(c *fiber.Ctx) error {
 	data := schemas.HomeEvent{}
 

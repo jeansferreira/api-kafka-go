@@ -1,6 +1,8 @@
 package main
 
-import "collect-server/initializers"
+import (
+	"collect-server/initializers"
+)
 
 func init() {
 	initializers.InitializeEnvironment()
@@ -8,5 +10,5 @@ func init() {
 
 func main() {
 	app := initializers.InitializeServer()
-	app.Listen(":3000")
+	app.Listen(":8080")
 }
